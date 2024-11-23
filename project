@@ -1,0 +1,220 @@
+
+ARCI
+
+
+server 1 --- jenkins
+
+server 2 --- nexus
+
+server 3 --- sonarqube 
+
+server 4 --- deployent --- docker 
+
+
+sudo apt update
+sudo apt install fontconfig openjdk-17-jre
+java -version
+openjdk version "17.0.8" 2023-07-18
+OpenJDK Runtime Environment (build 17.0.8+7-Debian-1deb12u1)
+OpenJDK 64-Bit Server VM (build 17.0.8+7-Debian-1deb12u1, mixed mode, sharing)
+
+
+sudo wget -O /usr/share/keyrings/jenkins-keyring.asc \
+  https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
+echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc]" \
+  https://pkg.jenkins.io/debian-stable binary/ | sudo tee \
+  /etc/apt/sources.list.d/jenkins.list > /dev/null
+sudo apt-get update
+sudo apt-get install jenkins
+
+
+sudo systemctl enable jenkins
+
+sudo systemctl start jenkins
+
+sudo systemctl status jenkins
+
+
+sonarqube 
+
+required t2 medium 
+
+sudo apt-get update                                   
+
+
+sudo apt install openjdk-17-jre
+
+
+cd /opt
+
+wget https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-9.9.5.90363.zip
+
+unzip sonarqube-9.9.5.90363.zip
+
+sudo chown -R ubuntu:ubuntu /opt/sonarqube-9.9.5.90363
+sudo chmod -R 755 /opt/sonarqube-9.9.5.90363
+
+./sonar.sh start
+
+
+sonar scaner 
+
+wget https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-4.8.0.2856-linux.zip
+
+unzip sonar-scanner-cli-4.8.0.2856-linux.zip
+
+
+Nexus
+
+sudo apt install docker.io
+
+docker pull sonatype/nexus3
+
+sudo docker volume create --name nexus-data
+
+docker run -d -p 8081:8081 -p 8083:8083 --name nexus -v nexus-data:/nexus-data sonatype/nexus3
+
+docker exec -it a9746c8715f1 sh
+
+cat /nexus-data/admin.password
+
+https://securitywing.com/setup-a-nexus3-repository-using-docker-on-virtual-box/
+
+/etc/docker/daemon.json
+
+{
+
+  “insecure-registries” : [“13.232.26.224:8083”]
+
+}
+
+
+
+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   -- github 
+
+sqp_af6ab0933badb139f636060ff4487dd6866ee7c1  ---sonarqube 
+
+sqa_fc793123fe80918c4a24637693f1468e3e12a102 --- jenkins
+
+sudo usermod -aG docker $USER
+
+
+sudo chmod 666 /var/run/docker.sock
+
+
+sudo nano /etc/docker/daemon.json
+
+{
+  "insecure-registries": ["13.232.26.224:8083"]
+}
+
+
+sudo systemctl restart docker
+
+docker login -u admin -p Admin 13.232.26.224:8083
+
+
+
+pipeline {
+    agent {
+        label 'master'
+    }
+    
+    environment {
+        imageName = 'white'
+        buildNumber = "${env.BUILD_NUMBER}"
+        dockerRegistry = '13.232.26.224:8083'
+        dockerHubUsername = 'admin'
+        dockerHubPassword = 'Admin'
+    }
+
+    stages {
+        stage('CheckOut') {
+            steps {
+                git branch: 'main', credentialsId: 'LMS', url: 'https://github.com/nabernes07/white-final.git'
+            }
+        }
+        stage('SonarQube Analysis') {
+            agent {
+                label 'sonar'
+            }
+            steps {
+                script {
+                    git branch: 'main', credentialsId: 'LMS', url: 'https://github.com/nabernes07/white-final.git'
+                    def scannerHome = tool 'anto'
+                    withSonarQubeEnv() {
+                        sh "/opt/sonar-scanner-4.8.0.2856-linux/bin/sonar-scanner -Dsonar.projectKey=white-final -Dsonar.login=sqp_af6ab0933badb139f636060ff4487dd6866ee7c1"
+                    }
+                }
+            }
+        }
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    docker.build("${imageName}:${buildNumber}", "-f Dockerfile .")
+                }
+            }
+        }
+        stage('Tag Docker Image') {
+            steps {
+                script {
+                    sh "docker tag ${imageName}:${buildNumber} ${dockerRegistry}/${imageName}:${buildNumber}"
+                }
+            }
+        }
+        stage('Push Docker Image') {
+            steps {
+                script {
+                    sh "docker login -u admin -p Admin ${dockerRegistry}"
+                    sh "docker push ${dockerRegistry}/${imageName}:${buildNumber}"
+                    sh "docker rmi ${dockerRegistry}/${imageName}:${buildNumber}"
+                    sh "docker rmi ${imageName}:${buildNumber}"
+                }
+            }
+        }
+        stage('Pull Docker Image') {
+            agent {
+                label 'dev-server'
+            }
+            steps {
+                script {
+                    sh """
+                        docker login -u admin -p Admin ${dockerRegistry}
+                    """
+                    
+                    sh """
+                        docker pull ${dockerRegistry}/${imageName}:${buildNumber}
+                    """
+                }
+            }
+        }
+        stage('Stop and Remove Previous Container') {
+            agent {
+                label 'dev-server'
+            }
+            steps {
+                script {
+                    sh """
+                        docker stop ${imageName} || true
+                    """
+                    
+                    sh """
+                        docker rm ${imageName} || true
+                    """
+                }
+            }
+        }
+        stage('Run Docker Container') {
+            agent {
+                label 'dev-server'
+            }
+            steps {
+                script {
+                    sh """
+                        docker run -itd --name ${imageName} -p 3000:3000 ${dockerRegistry}/${imageName}:${buildNumber}
+                    """
+                }
+            }
+        }
+    }
+}
